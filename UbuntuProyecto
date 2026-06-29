@@ -90,7 +90,7 @@ class MtdSwitch(app_manager.RyuApp):
                 datapath.send_msg(out)
                 return
 
-        # 2. MECANISMO PROXY ICMP (Usa obligatoriamente type_ y code_ con guion bajo)
+        # 2. MECANISMO PROXY ICMP (Sintaxis corregida: type_ con guion bajo, code SIN guion bajo)
         pkt_ipv4 = pkt.get_protocol(ipv4.ipv4)
         pkt_icmp = pkt.get_protocol(icmp.icmp)
         if pkt_ipv4 and pkt_icmp and pkt_icmp.type == icmp.ICMP_ECHO_REQUEST:
@@ -99,7 +99,8 @@ class MtdSwitch(app_manager.RyuApp):
                 icmp_reply = packet.Packet()
                 icmp_reply.add_protocol(ethernet.ethernet(ethertype=eth.ethertype, dst=src, src=dst))
                 icmp_reply.add_protocol(ipv4.ipv4(dst=pkt_ipv4.src, src=dst_ip, proto=pkt_ipv4.proto))
-                icmp_reply.add_protocol(icmp.icmp(type_=icmp.ICMP_ECHO_REPLY, code_=icmp.ICMP_ECHO_REPLY_CODE, data=pkt_icmp.data))
+                # Corrección estricta de parámetros según documentación oficial de Ryu
+                icmp_reply.add_protocol(icmp.icmp(type_=icmp.ICMP_ECHO_REPLY, code=icmp.ICMP_ECHO_REPLY_CODE, data=pkt_icmp.data))
                 icmp_reply.serialize()
                 
                 actions = [parser.OFPActionOutput(in_port)]
