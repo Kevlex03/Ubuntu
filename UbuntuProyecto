@@ -3,7 +3,7 @@ from ryu.base import app_manager
 from ryu.controller import ofp_event
 from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER, set_ev_cls
 from ryu.ofproto import ofproto_v1_3
-from ryu.lib.packet import packet, ethernet, ipv4
+from ryu.lib.packet import packet, ethernet, ipv4, arp
 from ryu.lib import hub
 
 class MtdSwitch(app_manager.RyuApp):
@@ -12,31 +12,22 @@ class MtdSwitch(app_manager.RyuApp):
     def __init__(self, *args, **kwargs):
         super(MtdSwitch, self).__init__(*args, **kwargs)
         self.mac_to_port = {}
-        
-        # Mapeo inicial de IPs Reales de Mininet
         self.real_to_virt = {'10.0.0.1': '10.0.0.1', '10.0.0.2': '10.0.0.2', '10.0.0.3': '10.0.0.3'}
         self.virt_to_real = {'10.0.0.1': '10.0.0.1', '10.0.0.2': '10.0.0.2', '10.0.0.3': '10.0.0.3'}
-        
-        # Hilo que cambia las IPs virtuales cada 5 segundos (Mutación)
         self.mutator_thread = hub.spawn(self._mutate_ips)
 
     def _mutate_ips(self):
         while True:
-            hub.sleep(5)  # Tiempo de mutación (5 segundos)
+            hub.sleep(15)  # Mutación cada 15 segundos para dar tiempo en la exposición
             self.logger.info("--- [MTD] ¡MUTACIÓN DE DIRECCIONES IP ACTIVADA! ---")
             for real_ip in self.real_to_virt.keys():
-                # Genera una IP virtual aleatoria en el rango 10.0.0.100 - 10.0.0.254
                 nueva_virtual = f"10.0.0.{random.randint(100, 254)}"
-                
-                # Borrar asignación vieja
                 old_virt = self.real_to_virt[real_ip]
                 if old_virt in self.virt_to_real:
                     del self.virt_to_real[old_virt]
-                
-                # Asignar nueva mutación
                 self.real_to_virt[real_ip] = nueva_virtual
                 self.virt_to_real[nueva_virtual] = real_ip
-                self.logger.info(f"Host Real {real_ip} -> Ahora camuflado en IP Virtual: {nueva_virtual}")
+                self.logger.info(f"Host Real {real_ip} -> IP Virtual: {nueva_virtual}")
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -64,48 +55,58 @@ class MtdSwitch(app_manager.RyuApp):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
         in_port = msg.match['in_port']
-
         pkt = packet.Packet(msg.data)
         eth = pkt.get_protocols(ethernet.ethernet)[0]
         dst = eth.dst
         src = eth.src
         dpid = datapath.id
         self.mac_to_port.setdefault(dpid, {})
-
         self.mac_to_port[dpid][src] = in_port
 
-        # Interceptar Paquetes IPv4 para aplicar MTD
+        # REGLA 1: Dejar pasar el tráfico ARP normal para que las MACs se resuelvan siempre
+        pkt_arp = pkt.get_protocol(arp.arp)
+        if pkt_arp:
+            if dst in self.mac_to_port[dpid]:
+                out_port = self.mac_to_port[dpid][dst]
+            else:
+                out_port = ofproto.OFPP_FLOOD
+            actions = [parser.OfpActionOutput(out_port)]
+            out = parser.OfpPacketOut(datapath=datapath, buffer_id=msg.buffer_id, in_port=in_port, actions=actions, data=msg.data)
+            datapath.send_msg(out)
+            return
+
+        # REGLA 2: Control de tráfico IPv4 (La defensa MTD)
         pkt_ipv4 = pkt.get_protocol(ipv4.ipv4)
         if pkt_ipv4:
             src_ip = pkt_ipv4.src
             dst_ip = pkt_ipv4.dst
-            
-            # Si el destino es una IP virtual mutada, la traducimos a la real
+
+            # Si el tráfico va hacia una IP Virtual Mutada, hacemos la traducción MTD
             if dst_ip in self.virt_to_real:
                 real_dst = self.virt_to_real[dst_ip]
-                
-                # Modificamos las acciones de OpenFlow para cambiar las IPs en caliente
                 actions = [
                     parser.OfpActionSetField(ipv4_src=self.real_to_virt.get(src_ip, src_ip)),
                     parser.OfpActionSetField(ipv4_dst=real_dst)
                 ]
-                
-                if dst in self.mac_to_port[dpid]:
-                    out_port = self.mac_to_port[dpid][dst]
-                else:
-                    out_port = ofproto.OFPP_FLOOD
-                    
+                out_port = self.mac_to_port[dpid][dst] if dst in self.mac_to_port[dpid] else ofproto.OFPP_FLOOD
                 actions.append(parser.OfpActionOutput(out_port))
                 out = parser.OfpPacketOut(datapath=datapath, buffer_id=msg.buffer_id, in_port=in_port, actions=actions, data=msg.data)
                 datapath.send_msg(out)
                 return
+            
+            # REGLA PERMISIVA: Si van a las IPs reales (10.0.0.1, .2, .3), permitir comunicación directa (Tráfico Legítimo)
+            if dst_ip in self.real_to_virt:
+                out_port = self.mac_to_port[dpid][dst] if dst in self.mac_to_port[dpid] else ofproto.OFPP_FLOOD
+                actions = [parser.OfpActionOutput(out_port)]
+                out = parser.OfpPacketOut(datapath=datapath, buffer_id=msg.buffer_id, in_port=in_port, actions=actions, data=msg.data)
+                datapath.send_msg(out)
+                return
 
-        # Comportamiento normal si no es IPv4 mutado
+        # Comportamiento por defecto
         if dst in self.mac_to_port[dpid]:
             out_port = self.mac_to_port[dpid][dst]
         else:
             out_port = ofproto.OFPP_FLOOD
-
         actions = [parser.OfpActionOutput(out_port)]
         out = parser.OfpPacketOut(datapath=datapath, buffer_id=msg.buffer_id, in_port=in_port, actions=actions, data=msg.data)
         datapath.send_msg(out)
