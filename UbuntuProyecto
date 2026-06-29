@@ -12,7 +12,6 @@ class MtdSwitch(app_manager.RyuApp):
     def __init__(self, *args, **kwargs):
         super(MtdSwitch, self).__init__(*args, **kwargs)
         self.mac_to_port = {}
-        # Mapeo estático de las direcciones MAC reales de la topología Mininet
         self.ip_to_mac = {
             '10.0.0.1': '00:00:00:00:00:01', 
             '10.0.0.2': '00:00:00:00:00:02', 
@@ -28,7 +27,7 @@ class MtdSwitch(app_manager.RyuApp):
             self.logger.info("--- [MTD] ¡MUTACIÓN DE DIRECCIONES IP ACTIVADA! ---")
             for real_ip in list(self.real_to_virt.keys()):
                 if real_ip == '10.0.0.1': 
-                    continue # Mantener al atacante h1 estable para facilitar la prueba
+                    continue 
                 nueva_virtual = f"10.0.0.{random.randint(100, 254)}"
                 old_virt = self.real_to_virt[real_ip]
                 if old_virt in self.virt_to_real:
@@ -64,7 +63,7 @@ class MtdSwitch(app_manager.RyuApp):
         self.mac_to_port.setdefault(dpid, {})
         self.mac_to_port[dpid][src] = in_port
 
-        # 1. PROXY ARP TRADUCTOR
+        # 1. PROXY ARP
         pkt_arp = pkt.get_protocol(arp.arp)
         if pkt_arp and pkt_arp.opcode == arp.ARP_REQUEST:
             dst_ip = pkt_arp.dst_ip
@@ -82,15 +81,14 @@ class MtdSwitch(app_manager.RyuApp):
                 datapath.send_msg(out)
                 return
 
-        # 2. PROXY ICMP (Evita la filtración de la IP Real en las respuestas del Ping)
+        # 2. PROXY ICMP PERMANENTE (Línea corregida: eth.ethertype)
         pkt_ipv4 = pkt.get_protocol(ipv4.ipv4)
         pkt_icmp = pkt.get_protocol(icmp.icmp)
         if pkt_ipv4 and pkt_icmp and pkt_icmp.type == icmp.ICMP_ECHO_REQUEST:
             dst_ip = pkt_ipv4.dst
             if dst_ip in self.virt_to_real:
-                # El controlador asume la identidad de la IP Virtual y responde directamente
                 icmp_reply = packet.Packet()
-                icmp_reply.add_protocol(ethernet.ethernet(ethertype=eth.ethernet.ethertype, dst=src, src=dst))
+                icmp_reply.add_protocol(ethernet.ethernet(ethertype=eth.ethertype, dst=src, src=dst))
                 icmp_reply.add_protocol(ipv4.ipv4(dst=pkt_ipv4.src, src=dst_ip, proto=pkt_ipv4.proto))
                 icmp_reply.add_protocol(icmp.icmp(type=icmp.ICMP_ECHO_REPLY, code=icmp.ICMP_ECHO_REPLY_CODE, data=pkt_icmp.data))
                 icmp_reply.serialize()
@@ -107,7 +105,7 @@ class MtdSwitch(app_manager.RyuApp):
 
         actions = [parser.OFPActionOutput(out_port)]
 
-        # 3. CONMUTACIÓN DE PAQUETES IPV4 ESTÁNDAR
+        # 3. TRADUCCIÓN BIDIRECCIONAL ESTÁNDAR
         if pkt_ipv4 and out_port != ofproto.OFPP_FLOOD:
             src_ip = pkt_ipv4.src
             dst_ip = pkt_ipv4.dst
