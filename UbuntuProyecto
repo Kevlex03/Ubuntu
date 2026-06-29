@@ -32,9 +32,7 @@ class MtdSwitch(app_manager.RyuApp):
             hub.sleep(20)
             self.logger.info("--- [MTD] ¡MUTACIÓN DE DIRECCIONES IP ACTIVADA! ---")
             for real_ip in list(self.real_to_virt.keys()):
-                if real_ip == '10.0.0.1': 
-                    continue  # Dejar estable h1 (atacante) para facilitar la prueba
-                
+                # MODIFICADO: Se removió la excepción de 10.0.0.1 para que mute TODA la red
                 nueva_virtual = f"10.0.0.{random.randint(100, 254)}"
                 old_virt = self.real_to_virt[real_ip]
                 
@@ -90,7 +88,7 @@ class MtdSwitch(app_manager.RyuApp):
                 datapath.send_msg(out)
                 return
 
-        # 2. MECANISMO PROXY ICMP (Sintaxis corregida: type_ con guion bajo, code SIN guion bajo)
+        # 2. MECANISMO PROXY ICMP (type_ con guion bajo, code sin guion bajo)
         pkt_ipv4 = pkt.get_protocol(ipv4.ipv4)
         pkt_icmp = pkt.get_protocol(icmp.icmp)
         if pkt_ipv4 and pkt_icmp and pkt_icmp.type == icmp.ICMP_ECHO_REQUEST:
@@ -99,7 +97,6 @@ class MtdSwitch(app_manager.RyuApp):
                 icmp_reply = packet.Packet()
                 icmp_reply.add_protocol(ethernet.ethernet(ethertype=eth.ethertype, dst=src, src=dst))
                 icmp_reply.add_protocol(ipv4.ipv4(dst=pkt_ipv4.src, src=dst_ip, proto=pkt_ipv4.proto))
-                # Corrección estricta de parámetros según documentación oficial de Ryu
                 icmp_reply.add_protocol(icmp.icmp(type_=icmp.ICMP_ECHO_REPLY, code=icmp.ICMP_ECHO_REPLY_CODE, data=pkt_icmp.data))
                 icmp_reply.serialize()
                 
@@ -115,18 +112,21 @@ class MtdSwitch(app_manager.RyuApp):
 
         actions = [parser.OFPActionOutput(out_port)]
 
-        # 3. TRADUCCIÓN BIDIRECCIONAL IPV4 ESTÁNDAR
+        # 3. TRADUCCIÓN BIDIRECCIONAL IPV4 ESTÁNDAR GLOBAL
         if pkt_ipv4 and out_port != ofproto.OFPP_FLOOD:
             src_ip = pkt_ipv4.src
             dst_ip = pkt_ipv4.dst
 
+            # Destino es una IP Virtual -> Traducir a IP Real para que el paquete sea entregado
             if dst_ip in self.virt_to_real:
                 real_dst = self.virt_to_real[dst_ip]
                 actions = [
                     parser.OFPActionSetField(ipv4_dst=real_dst),
                     parser.OFPActionOutput(out_port)
                 ]
-            elif src_ip in self.real_to_virt and src_ip != '10.0.0.1':
+            # Origen es una IP Real -> Enmascarar con su IP Virtual activa actual
+            # MODIFICADO: Se removió la restricción de '10.0.0.1' para incluirlo en la traducción
+            elif src_ip in self.real_to_virt:
                 virt_src = self.real_to_virt[src_ip]
                 actions = [
                     parser.OFPActionSetField(ipv4_src=virt_src),
