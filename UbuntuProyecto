@@ -83,12 +83,13 @@ class MtdSwitch(app_manager.RyuApp):
 
         actions = [parser.OFPActionOutput(out_port)]
 
-        # 2. TRADUCCIÓN BIDIRECCIONAL IPV4 (NAT CORREGIDO)
+        # 2. TRADUCCIÓN BIDIRECCIONAL IPV4
         pkt_ipv4 = pkt.get_protocol(ipv4.ipv4)
         if pkt_ipv4 and out_port != ofproto.OFPP_FLOOD:
             src_ip = pkt_ipv4.src
             dst_ip = pkt_ipv4.dst
 
+            # IDA
             if dst_ip in self.virt_to_real:
                 real_dst = self.virt_to_real[dst_ip]
                 actions = [
@@ -96,6 +97,7 @@ class MtdSwitch(app_manager.RyuApp):
                     parser.OFPActionOutput(out_port)
                 ]
             
+            # VUELTA
             elif src_ip in self.real_to_virt and src_ip != '10.0.0.1':
                 virt_src = self.real_to_virt[src_ip]
                 actions = [
