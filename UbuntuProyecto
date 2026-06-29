@@ -90,7 +90,7 @@ class MtdSwitch(app_manager.RyuApp):
                 datapath.send_msg(out)
                 return
 
-        # 2. MECANISMO PROXY ICMP Corregido (Usa type_ y code_ con guion bajo)
+        # 2. MECANISMO PROXY ICMP (Usa obligatoriamente type_ y code_ con guion bajo)
         pkt_ipv4 = pkt.get_protocol(ipv4.ipv4)
         pkt_icmp = pkt.get_protocol(icmp.icmp)
         if pkt_ipv4 and pkt_icmp and pkt_icmp.type == icmp.ICMP_ECHO_REQUEST:
