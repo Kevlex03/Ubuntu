@@ -34,20 +34,20 @@ class MtdSwitch(app_manager.RyuApp):
         datapath = ev.msg.datapath
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
-        match = parser.OfpMatch()
-        actions = [parser.OfpActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
-        inst = [parser.OfpInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
-        mod = parser.OfpFlowMod(datapath=datapath, priority=0, match=match, instructions=inst)
+        match = parser.OFPMatch()
+        actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+        mod = parser.OFPFlowMod(datapath=datapath, priority=0, match=match, instructions=inst)
         datapath.send_msg(mod)
 
     def add_flow(self, datapath, priority, match, actions, buffer_id=None):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
-        inst = [parser.OfpInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
         if buffer_id:
-            mod = parser.OfpFlowMod(datapath=datapath, buffer_id=buffer_id, priority=priority, match=match, instructions=inst)
+            mod = parser.OFPFlowMod(datapath=datapath, buffer_id=buffer_id, priority=priority, match=match, instructions=inst)
         else:
-            mod = parser.OfpFlowMod(datapath=datapath, priority=priority, match=match, instructions=inst)
+            mod = parser.OFPFlowMod(datapath=datapath, priority=priority, match=match, instructions=inst)
         datapath.send_msg(mod)
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
@@ -67,28 +67,25 @@ class MtdSwitch(app_manager.RyuApp):
         self.mac_to_port.setdefault(dpid, {})
         self.mac_to_port[dpid][src] = in_port
 
-        # Buscar puerto de salida seguro
         if dst in self.mac_to_port[dpid]:
             out_port = self.mac_to_port[dpid][dst]
         else:
             out_port = ofproto.OFPP_FLOOD
 
-        actions = [parser.OfpActionOutput(out_port)]
+        actions = [parser.OFPActionOutput(out_port)]
 
-        # INTERCEPTAR SOLAMENTE SI ES IPV4 Y VA A UNA IP VIRTUAL
         pkt_ipv4 = pkt.get_protocol(ipv4.ipv4)
         if pkt_ipv4 and out_port != ofproto.OFPP_FLOOD:
             dst_ip = pkt_ipv4.dst
             if dst_ip in self.virt_to_real:
                 real_dst = self.virt_to_real[dst_ip]
                 actions = [
-                    parser.OfpActionSetField(ipv4_dst=real_dst),
-                    parser.OfpActionOutput(out_port)
+                    parser.OFPActionSetField(ipv4_dst=real_dst),
+                    parser.OFPActionOutput(out_port)
                 ]
 
-        # Evitar congelamiento de flujos instalando la regla si conocemos el puerto
         if out_port != ofproto.OFPP_FLOOD:
-            match = parser.OfpMatch(in_port=in_port, eth_dst=dst, eth_src=src)
+            match = parser.OFPMatch(in_port=in_port, eth_dst=dst, eth_src=src)
             if msg.buffer_id != ofproto.OFP_NO_BUFFER:
                 self.add_flow(datapath, 1, match, actions, msg.buffer_id)
                 return
@@ -99,5 +96,5 @@ class MtdSwitch(app_manager.RyuApp):
         if msg.buffer_id == ofproto.OFP_NO_BUFFER:
             data = msg.data
 
-        out = parser.OfpPacketOut(datapath=datapath, buffer_id=msg.buffer_id, in_port=in_port, actions=actions, data=data)
+        out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id, in_port=in_port, actions=actions, data=data)
         datapath.send_msg(out)
