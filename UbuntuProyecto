@@ -12,13 +12,19 @@ class MtdSwitch(app_manager.RyuApp):
     def __init__(self, *args, **kwargs):
         super(MtdSwitch, self).__init__(*args, **kwargs)
         self.mac_to_port = {}
+        
+        # Mapeo estático de las direcciones MAC reales de la topología Mininet
         self.ip_to_mac = {
             '10.0.0.1': '00:00:00:00:00:01', 
             '10.0.0.2': '00:00:00:00:00:02', 
             '10.0.0.3': '00:00:00:00:00:03'
         }
+        
+        # Diccionarios de mutación dinámica
         self.real_to_virt = {'10.0.0.1': '10.0.0.1', '10.0.0.2': '10.0.0.2', '10.0.0.3': '10.0.0.3'}
         self.virt_to_real = {'10.0.0.1': '10.0.0.1', '10.0.0.2': '10.0.0.2', '10.0.0.3': '10.0.0.3'}
+        
+        # Hilo secundario para mutar IPs de forma periódica
         self.mutator_thread = hub.spawn(self._mutate_ips)
 
     def _mutate_ips(self):
@@ -27,11 +33,14 @@ class MtdSwitch(app_manager.RyuApp):
             self.logger.info("--- [MTD] ¡MUTACIÓN DE DIRECCIONES IP ACTIVADA! ---")
             for real_ip in list(self.real_to_virt.keys()):
                 if real_ip == '10.0.0.1': 
-                    continue 
+                    continue  # Dejar estable h1 (atacante) para facilitar la prueba
+                
                 nueva_virtual = f"10.0.0.{random.randint(100, 254)}"
                 old_virt = self.real_to_virt[real_ip]
+                
                 if old_virt in self.virt_to_real:
                     del self.virt_to_real[old_virt]
+                    
                 self.real_to_virt[real_ip] = nueva_virtual
                 self.virt_to_real[nueva_virtual] = real_ip
                 self.logger.info(f"Host Real {real_ip} -> IP Virtual Activa: {nueva_virtual}")
@@ -63,7 +72,7 @@ class MtdSwitch(app_manager.RyuApp):
         self.mac_to_port.setdefault(dpid, {})
         self.mac_to_port[dpid][src] = in_port
 
-        # 1. PROXY ARP
+        # 1. MECHANISMO PROXY ARP (Responde solicitudes ARP de IPs Virtuales legítimas)
         pkt_arp = pkt.get_protocol(arp.arp)
         if pkt_arp and pkt_arp.opcode == arp.ARP_REQUEST:
             dst_ip = pkt_arp.dst_ip
@@ -81,13 +90,14 @@ class MtdSwitch(app_manager.RyuApp):
                 datapath.send_msg(out)
                 return
 
-        # 2. PROXY ICMP PERMANENTE (Línea corregida: eth.ethertype)
+        # 2. MECHANISMO PROXY ICMP (El controlador firma las respuestas impidiendo fugas de IP real)
         pkt_ipv4 = pkt.get_protocol(ipv4.ipv4)
         pkt_icmp = pkt.get_protocol(icmp.icmp)
         if pkt_ipv4 and pkt_icmp and pkt_icmp.type == icmp.ICMP_ECHO_REQUEST:
             dst_ip = pkt_ipv4.dst
             if dst_ip in self.virt_to_real:
                 icmp_reply = packet.Packet()
+                # Modificado: Uso directo de eth.ethertype para evitar fallas de atributos
                 icmp_reply.add_protocol(ethernet.ethernet(ethertype=eth.ethertype, dst=src, src=dst))
                 icmp_reply.add_protocol(ipv4.ipv4(dst=pkt_ipv4.src, src=dst_ip, proto=pkt_ipv4.proto))
                 icmp_reply.add_protocol(icmp.icmp(type=icmp.ICMP_ECHO_REPLY, code=icmp.ICMP_ECHO_REPLY_CODE, data=pkt_icmp.data))
@@ -105,23 +115,16 @@ class MtdSwitch(app_manager.RyuApp):
 
         actions = [parser.OFPActionOutput(out_port)]
 
-        # 3. TRADUCCIÓN BIDIRECCIONAL ESTÁNDAR
+        # 3. TRADUCCIÓN BIDIRECCIONAL IPV4 ESTÁNDAR (Para otros tipos de tráfico)
         if pkt_ipv4 and out_port != ofproto.OFPP_FLOOD:
             src_ip = pkt_ipv4.src
             dst_ip = pkt_ipv4.dst
 
+            # IDA: De Atacante hacia IP Virtual -> Cambiar por IP Real
             if dst_ip in self.virt_to_real:
                 real_dst = self.virt_to_real[dst_ip]
                 actions = [
                     parser.OFPActionSetField(ipv4_dst=real_dst),
                     parser.OFPActionOutput(out_port)
                 ]
-            elif src_ip in self.real_to_virt and src_ip != '10.0.0.1':
-                virt_src = self.real_to_virt[src_ip]
-                actions = [
-                    parser.OFPActionSetField(ipv4_src=virt_src),
-                    parser.OFPActionOutput(out_port)
-                ]
-
-        out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id, in_port=in_port, actions=actions, data=msg.data if msg.buffer_id == ofproto.OFP_NO_BUFFER else None)
-        datapath.send_msg(out)
+            # VUELTA: De Víctima Real hacia Atacante -> Enmascarar con IP Virtual
