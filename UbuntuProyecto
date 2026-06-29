@@ -72,7 +72,7 @@ class MtdSwitch(app_manager.RyuApp):
         self.mac_to_port.setdefault(dpid, {})
         self.mac_to_port[dpid][src] = in_port
 
-        # 1. MECHANISMO PROXY ARP (Responde solicitudes ARP de IPs Virtuales legítimas)
+        # 1. MECANISMO PROXY ARP
         pkt_arp = pkt.get_protocol(arp.arp)
         if pkt_arp and pkt_arp.opcode == arp.ARP_REQUEST:
             dst_ip = pkt_arp.dst_ip
@@ -90,17 +90,16 @@ class MtdSwitch(app_manager.RyuApp):
                 datapath.send_msg(out)
                 return
 
-        # 2. MECHANISMO PROXY ICMP (El controlador firma las respuestas impidiendo fugas de IP real)
+        # 2. MECANISMO PROXY ICMP Corregido (Usa type_ y code_ con guion bajo)
         pkt_ipv4 = pkt.get_protocol(ipv4.ipv4)
         pkt_icmp = pkt.get_protocol(icmp.icmp)
         if pkt_ipv4 and pkt_icmp and pkt_icmp.type == icmp.ICMP_ECHO_REQUEST:
             dst_ip = pkt_ipv4.dst
             if dst_ip in self.virt_to_real:
                 icmp_reply = packet.Packet()
-                # Modificado: Uso directo de eth.ethertype para evitar fallas de atributos
                 icmp_reply.add_protocol(ethernet.ethernet(ethertype=eth.ethertype, dst=src, src=dst))
                 icmp_reply.add_protocol(ipv4.ipv4(dst=pkt_ipv4.src, src=dst_ip, proto=pkt_ipv4.proto))
-                icmp_reply.add_protocol(icmp.icmp(type=icmp.ICMP_ECHO_REPLY, code=icmp.ICMP_ECHO_REPLY_CODE, data=pkt_icmp.data))
+                icmp_reply.add_protocol(icmp.icmp(type_=icmp.ICMP_ECHO_REPLY, code_=icmp.ICMP_ECHO_REPLY_CODE, data=pkt_icmp.data))
                 icmp_reply.serialize()
                 
                 actions = [parser.OFPActionOutput(in_port)]
@@ -115,16 +114,23 @@ class MtdSwitch(app_manager.RyuApp):
 
         actions = [parser.OFPActionOutput(out_port)]
 
-        # 3. TRADUCCIÓN BIDIRECCIONAL IPV4 ESTÁNDAR (Para otros tipos de tráfico)
+        # 3. TRADUCCIÓN BIDIRECCIONAL IPV4 ESTÁNDAR
         if pkt_ipv4 and out_port != ofproto.OFPP_FLOOD:
             src_ip = pkt_ipv4.src
             dst_ip = pkt_ipv4.dst
 
-            # IDA: De Atacante hacia IP Virtual -> Cambiar por IP Real
             if dst_ip in self.virt_to_real:
                 real_dst = self.virt_to_real[dst_ip]
                 actions = [
                     parser.OFPActionSetField(ipv4_dst=real_dst),
                     parser.OFPActionOutput(out_port)
                 ]
-            # VUELTA: De Víctima Real hacia Atacante -> Enmascarar con IP Virtual
+            elif src_ip in self.real_to_virt and src_ip != '10.0.0.1':
+                virt_src = self.real_to_virt[src_ip]
+                actions = [
+                    parser.OFPActionSetField(ipv4_src=virt_src),
+                    parser.OFPActionOutput(out_port)
+                ]
+
+        out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id, in_port=in_port, actions=actions, data=msg.data if msg.buffer_id == ofproto.OFP_NO_BUFFER else None)
+        datapath.send_msg(out)
