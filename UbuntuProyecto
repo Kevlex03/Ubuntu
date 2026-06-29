@@ -22,7 +22,7 @@ class MtdSwitch(app_manager.RyuApp):
             hub.sleep(20)
             self.logger.info("--- [MTD] ¡MUTACIÓN DE DIRECCIONES IP ACTIVADA! ---")
             for real_ip in list(self.real_to_virt.keys()):
-                if real_ip == '10.0.0.1': continue # h1 es el atacante, no lo mutamos
+                if real_ip == '10.0.0.1': continue 
                 nueva_virtual = f"10.0.0.{random.randint(100, 254)}"
                 old_virt = self.real_to_virt[real_ip]
                 if old_virt in self.virt_to_real:
@@ -58,7 +58,7 @@ class MtdSwitch(app_manager.RyuApp):
         self.mac_to_port.setdefault(dpid, {})
         self.mac_to_port[dpid][src] = in_port
 
-        # 1. RESPUESTA PROXY ARP FULMINANTE
+        # 1. RESPUESTA PROXY ARP
         pkt_arp = pkt.get_protocol(arp.arp)
         if pkt_arp and pkt_arp.opcode == arp.ARP_REQUEST:
             dst_ip = pkt_arp.dst_ip
@@ -83,25 +83,23 @@ class MtdSwitch(app_manager.RyuApp):
 
         actions = [parser.OFPActionOutput(out_port)]
 
-        # 2. TRADUCCIÓN BIDIRECCIONAL IPV4 (NAT DE IDA Y VUELTA)
+        # 2. TRADUCCIÓN BIDIRECCIONAL IPV4 (NAT CORREGIDO)
         pkt_ipv4 = pkt.get_protocol(ipv4.ipv4)
         if pkt_ipv4 and out_port != ofproto.OFPP_FLOOD:
             src_ip = pkt_ipv4.src
             dst_ip = pkt_ipv4.dst
 
-            # IDA: Si el atacante va hacia una IP virtual, cambiamos destino por la Real
             if dst_ip in self.virt_to_real:
                 real_dst = self.virt_to_real[dst_ip]
                 actions = [
-                    parser.OfpActionSetField(ipv4_dst=real_dst),
+                    parser.OFPActionSetField(ipv4_dst=real_dst),
                     parser.OFPActionOutput(out_port)
                 ]
             
-            # VUELTA: Si la víctima responde, enmascaramos su IP real con la IP Virtual que el atacante espera
             elif src_ip in self.real_to_virt and src_ip != '10.0.0.1':
                 virt_src = self.real_to_virt[src_ip]
                 actions = [
-                    parser.OfpActionSetField(ipv4_src=virt_src),
+                    parser.OFPActionSetField(ipv4_src=virt_src),
                     parser.OFPActionOutput(out_port)
                 ]
 
